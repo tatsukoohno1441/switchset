@@ -103,7 +103,7 @@ if generate_clicked and uploaded is not None and not missing:
             try:
                 run_switch_outbound(in_path, out_path, mapping_files)
             except Exception as e:
-                st.error("生成出库单时出错，请检查终端日志或联系老公看看脚本。")
+                st.error("生成出库单时出错，请检查终端日志")
                 st.exception(e)
             else:
                 # 读出生成的 Excel，准备下载
