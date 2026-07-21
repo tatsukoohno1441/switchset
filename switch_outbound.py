@@ -47,6 +47,7 @@ ACCESSORY_FIXED = {
 INLINE_MAPPING = [
     {"keyword": "マリオカート", "jan": "4902370553031", "unit_price": 8000},
     {"keyword": "LEGENDS", "jan": "4902370553505", "unit_price": 8000},
+    {"keyword": "スプラトゥーン", "jan": "4902370554779", "unit_price": 8000},
 ]
 
 # -----------------------------------------------------------
