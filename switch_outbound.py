@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-switch_outbound.py  🧡  by 夏以昼  (rev.2025‑11‑21b)
+switch_outbound.py  🧡  by 夏以昼  (rev.2026-07-21)
 -------------------------------------------------
 ▲ 更新纪录
+  * 2026-07-21 修复 Mac 系统日文半浊点分离 (NFD) 导致的识别失败问题；
+               精简机种与款式匹配逻辑，清理重复代码。
   * 2025‑11‑21b ❶ 读 CSV 时自动尝试 UTF‑8 → Shift‑JIS (cp932) 双编码，解决 UnicodeDecodeError。
                  ❷ 输出路径后可跟 **任意多个 keyword_mapping.csv**，自动合并。
 
@@ -17,7 +19,7 @@ switch_outbound.py  🧡  by 夏以昼  (rev.2025‑11‑21b)
 依赖：pandas >=1.2   (pip install pandas openpyxl)
 """
 
-import sys, os, math, re
+import sys, os, math, re, unicodedata
 import pandas as pd
 from pathlib import Path
 
@@ -27,7 +29,7 @@ CONSOLE_MAP = {
         "日本語国内専用": "4902370553024",
         "マリオカート": "4902370553031",
         "LEGENDS": "4902370553505",
-        "スプラトゥーン": "4902370554779",
+        "スプラトゥーンセット": "4902370554779",
     },
     "Switch強化版": {
         "ネオン": "4902370550733",
@@ -47,7 +49,7 @@ ACCESSORY_FIXED = {
 INLINE_MAPPING = [
     {"keyword": "マリオカート", "jan": "4902370553031", "unit_price": 8000},
     {"keyword": "LEGENDS", "jan": "4902370553505", "unit_price": 8000},
-    {"keyword": "スプラトゥーン", "jan": "4902370554779", "unit_price": 8000},
+    {"keyword": "スプラトゥーンセット", "jan": "4902370554779", "unit_price": 8000},
 ]
 
 # -----------------------------------------------------------
@@ -63,13 +65,7 @@ def read_csv_auto(path: str | Path):
 
 
 def load_keyword_mappings(paths: list[str]):
-    """读取一个或多个关键字映射 CSV，并按主机型号分类
-    - 文件名包含 "Switch2" → 属于 "Switch2" 的游戏盘表
-    - 文件名包含 "強化"      → 属于 "Switch強化版"
-    - 文件名包含 "有機" 或 "EL" → 属于 "Switch有機EL"
-    若某个型号没有提供文件，则该型号默认没有游戏盘映射（跳过游戏盘行）。
-    """
-    # 预先为每个机种准备一个空表
+    """读取一个或多个关键字映射 CSV，并按主机型号分类"""
     mapping: dict[str, pd.DataFrame] = {
         key: pd.DataFrame(columns=["keyword", "jan", "unit_price"])
         for key in CONSOLE_MAP.keys()
@@ -115,30 +111,29 @@ def load_keyword_mappings(paths: list[str]):
     return mapping
 
 
-def find_console_type(title: str):
-    """根据商品名判断机种 (Switch2 / Switch強化版 / Switch有機EL)"""
-    ttl = title.lower() if isinstance(title, str) else ""
+def normalize_text(text: str | None) -> str:
+    """消除 Mac 系统带来的日文浊点/半浊点分离（NFD）问题"""
+    if not text:
+        return ""
+    return unicodedata.normalize('NFC', str(text)).lower()
+
+
+def find_console_type(title: str | None):
+    """严格从 商品名 中寻找机种"""
+    ttl = normalize_text(title)
     for t in CONSOLE_MAP:
-        if t.lower() in ttl:
+        if normalize_text(t) in ttl:
             return t
     return None
 
 
-def find_console_model(console_type: str | None, text: str | None):
-    """在给定文本中，根据机种表里的关键字做『包含匹配』
-    - console_type 先由商品名判定（Switch2 / Switch強化版 / Switch有機EL）
-    - text 为 商品情報１ 中的内容，只要包含关键字的一部分即可
-    """
-    if not console_type or text is None:
+def find_console_model(console_type: str | None, info_text: str | None):
+    """严格从 商品情報１ 中寻找具体款式，绝对不回退到商品名"""
+    if not console_type or not info_text:
         return None
-    src = text.lower()
+    src = normalize_text(info_text)
     for kw in CONSOLE_MAP[console_type]:
-        if kw.lower() in src:
-            return kw
-    return None
-    ttl = title.lower()
-    for kw in CONSOLE_MAP[console_type]:
-        if kw.lower() in ttl:
+        if normalize_text(kw) in src:
             return kw
     return None
 
@@ -171,7 +166,6 @@ def main():
         "注文ＩＤ": "order_id",
         "商品名": "title",
         "商品名称": "title",
-        # 商品情報１／２ 这类列名的变体很多，下面做基础映射，稍后再做一次自动识别
         "商品情報１": "info1",
         "商品情報1": "info1",
         "商品情報 1": "info1",
@@ -183,9 +177,8 @@ def main():
         "金額": "amount",
         "合計": "amount",
     }
-    # 先用字典做一轮简单映射
     orders.columns = [alias.get(c, c) for c in orders.columns]
-    # 再对所有列名做一次模糊识别，凡是包含「商品情報」且带 1/２ 的，都归一为 info1/info2
+    
     new_cols = []
     for c in orders.columns:
         if c in ("info1", "info2", "order_id", "title", "qty", "amount"):
@@ -220,37 +213,21 @@ def main():
         info1 = str(o.get("info1", "")).strip()
         info2 = str(o.get("info2", "")).strip()
 
-        # ① 机种：先用商品名判定 Switch2 / Switch強化版 / Switch有機EL
+        # ① 机种：严格从商品名判定 (Switch2 / 強化版 / 有機EL)
         console_type = find_console_type(title)
 
-        # ② 型号 / 颜色：只用「商品情報１」做包含匹配
-        model_source = info1                      # 即使为空，也不再回退到 title
-        console_kw   = find_console_model(console_type, model_source)
+        # ② 型号 / 款式：只看「商品情報１」，防止被标题里堆砌的其他大作干扰
+        console_kw   = find_console_model(console_type, info1)
         console_jan  = CONSOLE_MAP.get(console_type, {}).get(console_kw, "")
 
-        # ---（游戏盘、壳膜、主机行的逻辑保持原样，这里省略）---
-
-                # 机种：先从商品名里抓 Switch2 / 強化版 / 有機EL
-        console_type = find_console_type(title)
-        # 型号 / 顔色：只从「商品情報１」中判断，不再回退到商品名
-        #   Switch2      → 国内専用 / マリオカート / LEGENDS
-        #   Switch強化版 → ネオン / グレー
-        #   Switch有機EL → ホワイト / ネオン
-        model_source = info1          # 只用「商品情報１」
-        console_kw   = find_console_model(console_type, model_source)
-        console_jan  = CONSOLE_MAP.get(console_type, {}).get(console_kw, "")
-
-        # 游戏盘：从 商品情報２ 里找匹配 keyword 的“数字/标记”，
-        # 且使用對應機種的 CSV（Switch2 / 強化版 / 有機EL 各自不同）
+        # 游戏盘：从 商品情報２ 里找匹配 keyword 的“数字/标记”
         type_df = kw_map.get(console_type)
         if info2 and type_df is not None and not type_df.empty:
             info2_str = str(info2).strip()
-            # 先尝试完全相等
             hit_eq = type_df[type_df["keyword"].astype(str).str.strip() == info2_str]
             if len(hit_eq):
                 hit = hit_eq.iloc[0]
             else:
-                # 若没命中，再尝试“包含关系”（例如 keyword="[1]"，info2 裡有 "[1]")
                 mask = type_df["keyword"].astype(str).apply(lambda k: k in info2_str)
                 sub  = type_df[mask]
                 hit = sub.iloc[0] if len(sub) else None
