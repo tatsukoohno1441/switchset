@@ -27,7 +27,7 @@ from pathlib import Path
 CONSOLE_MAP = {
     "Switch2": {
         "スプラトゥーンセット": "4902370554779",
-        "日本語国内専用": "4902370553024",
+        "国内専用": "4902370553024",
         "マリオカート": "4902370553031",
         "LEGENDS": "4902370553505",
         "ゼルダ": "4902370554595",
@@ -134,10 +134,10 @@ def find_console_model(console_type: str | None, info_text: str | None):
     if not console_type or not info_text:
         return None
     src = normalize_text(info_text)
-    for kw in CONSOLE_MAP[console_type]:
-        if normalize_text(kw) in src:
-            return kw
-    return None
+    matched = [kw for kw in CONSOLE_MAP[console_type] if normalize_text(kw) in src]
+    if len(matched) > 1:
+        raise ValueError(f"商品情報１同时匹配到多个主机型号：{matched}；原文：{info_text}。请先确认型号。")
+    return matched[0] if matched else None
 
 # -----------------------------------------------------------
 # 主入口
@@ -221,6 +221,18 @@ def main():
         # ② 型号 / 款式：只看「商品情報１」，防止被标题里堆砌的其他大作干扰
         console_kw   = find_console_model(console_type, info1)
         console_jan  = CONSOLE_MAP.get(console_type, {}).get(console_kw, "")
+        # 不再悄悄导出缺少主机 JAN 的出库单；直接指出问题订单与原始字段
+        if not console_jan:
+            expected = " / ".join(CONSOLE_MAP.get(console_type, {}).keys()) if console_type else "Switch2 / Switch強化版 / Switch有機EL"
+            raise ValueError(
+                f"主机 JAN 匹配失败！注文番号：{order_id}；"
+                f"商品名：{title}；商品情報１：{info1}；"
+                f"识别机种：{console_type or '未识别'}；"
+                f"需在商品情報１中包含对应关键词：{expected}。"
+                "请检查原始订单后重新生成，避免缺失 JAN 的出库单进入仓库。"
+            )
+
+        # 游戏盘:
 
         # 游戏盘：从 商品情報２ 里找匹配 keyword 的“数字/标记”
         type_df = kw_map.get(console_type)
